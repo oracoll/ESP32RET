@@ -27,6 +27,11 @@ void SDLogger::setup() {
 }
 
 void SDLogger::checkSDCard() {
+    if (loggingActive) return; // Do not interrupt active logging
+
+    // Cleanly de-initialize before calling begin() again to prevent ESP32 block locks
+    SD.end();
+
     // Try to initialize SD card
     if (SD.begin(5, SPI)) {
         cardPresent = true;
@@ -51,7 +56,11 @@ String SDLogger::getNextFileName() {
 }
 
 void SDLogger::startLogging() {
-    checkSDCard();
+    // Only re-check if card is not already successfully detected to avoid multiple begin() locking issues
+    if (!cardPresent) {
+        checkSDCard();
+    }
+
     if (!cardPresent) {
         Serial.println("Failed to start logging: SD Card not present.");
         orangeBlink = true;
