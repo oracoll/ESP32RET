@@ -36,6 +36,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "gvret_comm.h"
 #include "can_manager.h"
 #include "lawicel.h"
+#include "sd_logger.h"
 
 //on the S3 we want the default pins to be different
 #ifdef CONFIG_IDF_TARGET_ESP32S3
@@ -67,6 +68,15 @@ SerialConsole console;
 CRGB leds[A5_NUM_LEDS]; //A5 has the largest # of LEDs so use that one even for A0 or EVTV
 
 CAN_COMMON *canBuses[NUM_BUSES];
+
+// Custom feature global variables
+uint32_t lastHostActivity = 0;
+uint32_t lastTxTraffic = 0;
+uint32_t lastRxTraffic = 0;
+
+uint32_t orangeBlinkActiveUntil = 0;
+uint32_t yellowBlinkActiveUntil = 0;
+uint32_t purpleBlinkActiveUntil = 0;
 
 //initializes all the system EEPROM values. Chances are this should be broken out a bit but
 //there is only one checksum check for all of them so it's simple to do it all here.
@@ -257,6 +267,15 @@ void setup()
 
     loadSettings();
 
+    // Initialize custom Addressable RGB LED (WS2812) on Pin D2
+    FastLED.addLeds<WS2812B, 2, GRB>(leds, 1).setCorrection(TypicalLEDStrip);
+    FastLED.setBrightness(190);
+    leds[0] = CRGB::Blue;
+    FastLED.show();
+
+    // Setup custom SD Card Logger module (handles D15, D34, SPI, SD)
+    sdLogger.setup();
+
     canManager.setup();
 
     SysSettings.lawicelMode = false;
@@ -308,6 +327,62 @@ void loop()
     if (SysSettings.lawicelPollCounter > 0) SysSettings.lawicelPollCounter--;
 
     canManager.loop();
+
+    // Loop the SD Logger and Button processing
+    sdLogger.loop();
+
+    // Custom LED State Machine and Priority Logic
+    if (sdLogger.getAndClearOrangeBlink()) {
+        orangeBlinkActiveUntil = millis() + 1500;
+    }
+    if (sdLogger.getAndClearYellowBlink()) {
+        yellowBlinkActiveUntil = millis() + 1500;
+    }
+    if (sdLogger.getAndClearPurpleBlink()) {
+        purpleBlinkActiveUntil = millis() + 1500;
+    }
+
+    CRGB ledColor = CRGB::Black;
+
+    if (millis() < orangeBlinkActiveUntil) {
+        // Blink Orange (200ms cycle: 100ms orange, 100ms off)
+        ledColor = (millis() % 200 < 100) ? CRGB(255, 60, 0) : CRGB::Black;
+    } else if (millis() < yellowBlinkActiveUntil) {
+        // Blink Yellow (200ms cycle: 100ms yellow, 100ms off)
+        ledColor = (millis() % 200 < 100) ? CRGB(255, 255, 0) : CRGB::Black;
+    } else if (millis() < purpleBlinkActiveUntil) {
+        // Blink Purple (200ms cycle: 100ms purple, 100ms off)
+        ledColor = (millis() % 200 < 100) ? CRGB(128, 0, 128) : CRGB::Black;
+    } else if (millis() - lastTxTraffic < 80) {
+        // Blink Red for CAN TX Traffic
+        ledColor = CRGB::Red;
+    } else if (millis() - lastRxTraffic < 80) {
+        // Blink Green for CAN RX Traffic
+        ledColor = CRGB::Green;
+    } else if (sdLogger.isLoggingActive()) {
+        // Blink fast purple for SD logging active (300ms cycle: 150ms purple, 150ms off)
+        ledColor = (millis() % 300 < 150) ? CRGB(128, 0, 128) : CRGB::Black;
+    } else if (millis() - lastHostActivity < 2000) {
+        // Connected to SavvyCAN - Blue Heartbeat (double pulse, 1000ms cycle)
+        uint32_t t = millis() % 1000;
+        uint8_t b = 0;
+        if (t < 150) {
+            b = map(t, 0, 150, 0, 255);
+        } else if (t < 300) {
+            b = map(t, 150, 300, 255, 0);
+        } else if (t < 450) {
+            b = map(t, 300, 450, 0, 255);
+        } else if (t < 600) {
+            b = map(t, 450, 600, 255, 0);
+        }
+        ledColor = CRGB(0, 0, b);
+    } else {
+        // Solid Blue when not connected to SavvyCAN
+        ledColor = CRGB::Blue;
+    }
+
+    leds[0] = ledColor;
+    FastLED.show();
 
     size_t serialLength = serialGVRET.numAvailableBytes();
 

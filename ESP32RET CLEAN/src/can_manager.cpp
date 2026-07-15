@@ -5,6 +5,10 @@
 #include "SerialConsole.h"
 #include "gvret_comm.h"
 #include "lawicel.h"
+#include "sd_logger.h"
+
+extern uint32_t lastTxTraffic;
+extern uint32_t lastRxTraffic;
 
 
 //twai alerts copied here for ease of access. Look up alerts right here:
@@ -131,6 +135,8 @@ void CANManager::sendFrame(CAN_COMMON *bus, CAN_FRAME &frame)
     for (int i = 0; i < NUM_BUSES; i++) if (canBuses[i] == bus) whichBus = i;
     bus->sendFrame(frame);
     addBits(whichBus, frame);
+    lastTxTraffic = millis();
+    sdLogger.logFrame(frame, whichBus, 1); // 1 = TX
 }
 
 void CANManager::sendFrame(CAN_COMMON *bus, CAN_FRAME_FD &frame)
@@ -139,6 +145,8 @@ void CANManager::sendFrame(CAN_COMMON *bus, CAN_FRAME_FD &frame)
     for (int i = 0; i < NUM_BUSES; i++) if (canBuses[i] == bus) whichBus = i;
     bus->sendFrameFD(frame);
     addBits(whichBus, frame);
+    lastTxTraffic = millis();
+    sdLogger.logFrameFD(frame, whichBus, 1); // 1 = TX
 }
 
 
@@ -199,12 +207,16 @@ void CANManager::loop()
                 canBuses[i]->read(incoming);
                 addBits(i, incoming);
                 displayFrame(incoming, i);
+                lastRxTraffic = millis();
+                sdLogger.logFrame(incoming, i, 0); // 0 = RX
             }
             else
             {
                 canBuses[i]->readFD(inFD);
                 addBits(i, inFD);
                 displayFrame(inFD, i);
+                lastRxTraffic = millis();
+                sdLogger.logFrameFD(inFD, i, 0); // 0 = RX
             }
 
             toggleRXLED();

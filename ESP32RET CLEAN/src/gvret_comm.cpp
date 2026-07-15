@@ -13,8 +13,11 @@ GVRET_Comm_Handler::GVRET_Comm_Handler()
     state = IDLE;
 }
 
+extern uint32_t lastHostActivity;
+
 void GVRET_Comm_Handler::processIncomingByte(uint8_t in_byte)
 {
+    lastHostActivity = millis();
     uint32_t busSpeed = 0;
     uint32_t now = micros();
 
