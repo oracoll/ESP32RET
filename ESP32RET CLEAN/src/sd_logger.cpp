@@ -29,16 +29,24 @@ void SDLogger::setup() {
 void SDLogger::checkSDCard() {
     if (loggingActive) return; // Do not interrupt active logging
 
-    // Cleanly de-initialize before calling begin() again to prevent ESP32 block locks
-    SD.end();
-
-    // Try to initialize SD card
-    if (SD.begin(5, SPI)) {
-        cardPresent = true;
-        Serial.println("SD Card detected and initialized successfully!");
+    // If not currently detected, attempt first-time initialization
+    if (!cardPresent) {
+        if (SD.begin(5, SPI)) {
+            cardPresent = true;
+            Serial.println("SD Card detected and initialized successfully!");
+        } else {
+            cardPresent = false;
+            Serial.println("No SD Card detected.");
+        }
     } else {
-        cardPresent = false;
-        Serial.println("No SD Card detected.");
+        // If already detected, dynamically check if card is still inserted and responsive
+        if (SD.cardType() != CARD_NONE) {
+            cardPresent = true;
+        } else {
+            cardPresent = false;
+            SD.end(); // Clean up if card was pulled out
+            Serial.println("SD Card was removed.");
+        }
     }
 }
 
