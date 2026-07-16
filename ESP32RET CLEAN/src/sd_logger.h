@@ -27,6 +27,7 @@ private:
     bool loggingActive;
     File logFile;
     int logIndex;
+    String currentLogFilename;
 
     void findHighestLogIndex();
 

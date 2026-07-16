@@ -118,13 +118,13 @@ void SDLogger::startLogging() {
         return;
     }
 
-    String filename = getNextFileName();
-    logFile = SD.open(filename, FILE_WRITE);
+    currentLogFilename = getNextFileName();
+    logFile = SD.open(currentLogFilename, FILE_WRITE);
     if (logFile) {
         loggingActive = true;
         yellowBlink = true;
         Serial.print("Started logging to: ");
-        Serial.println(filename);
+        Serial.println(currentLogFilename);
 
         // Write SavvyCAN CSV header row with Tab separation
         logFile.print("Time Stamp\tID\tExtended\tDir\tBus\tLEN\tD1\tD2\tD3\tD4\tD5\tD6\tD7\tD8\n");
@@ -191,11 +191,20 @@ void SDLogger::logFrameFD(CAN_FRAME_FD &frame, int bus, int dir) {
 
 void SDLogger::loop() {
     static uint32_t lastFlush = 0;
+    static uint32_t lastReopen = 0;
 
     // Periodically flush the file to protect against data loss
     if (loggingActive && logFile && (millis() - lastFlush > 500)) {
         logFile.flush();
         lastFlush = millis();
+    }
+
+    // Auto-commit (close and re-open in append mode) every 5 seconds to guarantee directory structure writes
+    if (loggingActive && logFile && (millis() - lastReopen > 5000)) {
+        logFile.close();
+        logFile = SD.open(currentLogFilename, FILE_APPEND);
+        lastReopen = millis();
+        Serial.println("Committed SD log to disk.");
     }
 
     // Button 1 (D15) handler: Start logging if held > 2s, stop if held > 1s
