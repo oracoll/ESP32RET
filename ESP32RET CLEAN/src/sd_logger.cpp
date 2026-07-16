@@ -19,6 +19,7 @@ SDLogger::SDLogger() {
     lastReopen = 0;
     hasNextFrame = false;
     fileBaseTime = 0;
+    prevFrameTime = 0;
 }
 
 void SDLogger::setup() {
@@ -186,6 +187,7 @@ void SDLogger::startPlayback(String filename) {
     if (playFile) {
         playbackActive = true;
         fileBaseTime = 0;
+        prevFrameTime = 0;
         hasNextFrame = false;
         playBaseTime = micros();
         Serial.print("Attempting playback of: ");
@@ -358,6 +360,14 @@ void SDLogger::loop() {
                 if (fileBaseTime == 0) {
                     fileBaseTime = nextFrameTime;
                     playBaseTime = micros();
+                    prevFrameTime = nextFrameTime;
+                } else {
+                    // Detect timestamp rollback in file!
+                    if (nextFrameTime < prevFrameTime) {
+                        Serial.printf("Rollback detected! Resetting time base. Old: %u, New: %u\n", prevFrameTime, nextFrameTime);
+                        fileBaseTime = nextFrameTime;
+                        playBaseTime = micros();
+                    }
                 }
             } else {
                 stopPlayback();
@@ -376,6 +386,7 @@ void SDLogger::loop() {
                 extern uint32_t lastTxTraffic;
                 lastTxTraffic = millis();
 
+                prevFrameTime = nextFrameTime; // Update sequential tracking
                 hasNextFrame = false; // Move to next frame
             }
         }

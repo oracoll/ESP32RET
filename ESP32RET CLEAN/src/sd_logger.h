@@ -41,6 +41,7 @@ private:
     uint32_t playBaseTime;
     uint32_t fileBaseTime;
     uint32_t nextFrameTime;
+    uint32_t prevFrameTime;
     CAN_FRAME nextFrame;
     int nextFrameBus;
     bool hasNextFrame;
