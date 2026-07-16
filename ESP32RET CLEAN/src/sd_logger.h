@@ -28,6 +28,8 @@ private:
     File logFile;
     int logIndex;
 
+    void findHighestLogIndex();
+
     // Buttons state
     uint32_t btn1PressStart;
     bool btn1WasPressed;

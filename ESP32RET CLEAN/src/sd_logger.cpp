@@ -54,6 +54,7 @@ void SDLogger::checkSDCard() {
         if (SD.begin(4, SPI, 4000000)) {
             cardPresent = true;
             Serial.println("SD Card detected and initialized successfully!");
+            findHighestLogIndex();
         } else {
             cardPresent = false;
             Serial.println("No SD Card detected.");
@@ -70,17 +71,39 @@ void SDLogger::checkSDCard() {
     }
 }
 
+void SDLogger::findHighestLogIndex() {
+    File root = SD.open("/");
+    if (!root) return;
+
+    int maxIdx = 0;
+    while (true) {
+        File file = root.openNextFile();
+        if (!file) {
+            break; // No more files
+        }
+
+        String name = file.name();
+        int idx = name.indexOf("log_");
+        if (idx != -1) {
+            String numStr = name.substring(idx + 4, idx + 7);
+            int num = numStr.toInt();
+            if (num > maxIdx) {
+                maxIdx = num;
+            }
+        }
+        file.close();
+    }
+    root.close();
+
+    logIndex = maxIdx + 1;
+    Serial.printf("Highest log index found: %d. Next log will be log_%03d.csv\n", maxIdx, logIndex);
+}
+
 String SDLogger::getNextFileName() {
     char nameBuf[32];
-    // Find next unused log file index
-    while (logIndex < 1000) {
-        sprintf(nameBuf, "/log_%03d.csv", logIndex);
-        if (!SD.exists(nameBuf)) {
-            return String(nameBuf);
-        }
-        logIndex++;
-    }
-    return String("/log_999.csv");
+    sprintf(nameBuf, "/log_%03d.csv", logIndex);
+    logIndex++; // Increment for the next start logging session
+    return String(nameBuf);
 }
 
 void SDLogger::startLogging() {
