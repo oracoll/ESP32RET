@@ -28,6 +28,8 @@ private:
     File logFile;
     int logIndex;
     String currentLogFilename;
+    uint32_t lastFlush;
+    uint32_t lastReopen;
 
     void findHighestLogIndex();
 

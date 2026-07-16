@@ -13,6 +13,8 @@ SDLogger::SDLogger() {
     yellowBlink = false;
     orangeBlink = false;
     purpleBlink = false;
+    lastFlush = 0;
+    lastReopen = 0;
 }
 
 void SDLogger::setup() {
@@ -123,6 +125,8 @@ void SDLogger::startLogging() {
     if (logFile) {
         loggingActive = true;
         yellowBlink = true;
+        lastFlush = millis();
+        lastReopen = millis();
         Serial.print("Started logging to: ");
         Serial.println(currentLogFilename);
 
@@ -190,9 +194,6 @@ void SDLogger::logFrameFD(CAN_FRAME_FD &frame, int bus, int dir) {
 }
 
 void SDLogger::loop() {
-    static uint32_t lastFlush = 0;
-    static uint32_t lastReopen = 0;
-
     // Periodically flush the file to protect against data loss
     if (loggingActive && logFile && (millis() - lastFlush > 500)) {
         logFile.flush();
