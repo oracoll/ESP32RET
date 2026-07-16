@@ -24,19 +24,19 @@ void SDLogger::setup() {
     pinMode(23, INPUT_PULLUP); // MOSI
     pinMode(18, INPUT_PULLUP); // SCK
 
-    // Configure CS pin (5) as output and drive it HIGH to unselect the card initially
-    pinMode(5, OUTPUT);
-    digitalWrite(5, HIGH);
+    // Configure CS pin (4) as output and drive it HIGH to unselect the card initially
+    pinMode(4, OUTPUT);
+    digitalWrite(4, HIGH);
 
     // Provide a solid delay for SD card internal controllers to boot up completely
     delay(500);
 
-    // Initialize SPI on pins 18, 19, 23 (pass -1 to prevent SPI driver from seizing Pin 5)
+    // Initialize SPI on pins 18, 19, 23 (pass -1 to prevent SPI driver from seizing Pin 4)
     SPI.begin(18, 19, 23, -1);
 
     // Generate at least 74 clock cycles with CS HIGH (120 cycles here) to cleanly put the SD card into SPI mode before initialization
     SPI.beginTransaction(SPISettings(400000, MSBFIRST, SPI_MODE0));
-    digitalWrite(5, HIGH);
+    digitalWrite(4, HIGH);
     for (int i = 0; i < 15; i++) {
         SPI.transfer(0xFF);
     }
@@ -51,7 +51,7 @@ void SDLogger::checkSDCard() {
 
     // If not currently detected, attempt first-time initialization
     if (!cardPresent) {
-        if (SD.begin(5, SPI, 4000000)) {
+        if (SD.begin(4, SPI, 4000000)) {
             cardPresent = true;
             Serial.println("SD Card detected and initialized successfully!");
         } else {
