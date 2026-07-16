@@ -362,6 +362,9 @@ void loop()
     } else if (sdLogger.isLoggingActive()) {
         // Blink fast purple for SD logging active (300ms cycle: 150ms purple, 150ms off)
         ledColor = (millis() % 300 < 150) ? CRGB(128, 0, 128) : CRGB::Black;
+    } else if (sdLogger.isPlaybackActive()) {
+        // Blink fast cyan for SD card playback active (300ms cycle: 150ms cyan, 150ms off)
+        ledColor = (millis() % 300 < 150) ? CRGB(0, 255, 255) : CRGB::Black;
     } else if (millis() - lastHostActivity < 2000) {
         // Connected to SavvyCAN - Blue Heartbeat (double pulse, 1000ms cycle)
         uint32_t t = millis() % 1000;

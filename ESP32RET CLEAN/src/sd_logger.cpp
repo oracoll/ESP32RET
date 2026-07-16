@@ -1,10 +1,12 @@
 #include "sd_logger.h"
+#include "can_manager.h"
 
 SDLogger sdLogger;
 
 SDLogger::SDLogger() {
     cardPresent = false;
     loggingActive = false;
+    playbackActive = false;
     logIndex = 1;
     btn1PressStart = 0;
     btn1WasPressed = false;
@@ -15,6 +17,8 @@ SDLogger::SDLogger() {
     purpleBlink = false;
     lastFlush = 0;
     lastReopen = 0;
+    hasNextFrame = false;
+    fileBaseTime = 0;
 }
 
 void SDLogger::setup() {
@@ -49,7 +53,7 @@ void SDLogger::setup() {
 }
 
 void SDLogger::checkSDCard() {
-    if (loggingActive) return; // Do not interrupt active logging
+    if (loggingActive || playbackActive) return; // Do not interrupt active logging or playback
 
     // If not currently detected, attempt first-time initialization
     if (!cardPresent) {
@@ -101,6 +105,17 @@ void SDLogger::findHighestLogIndex() {
     Serial.printf("Highest log index found: %d. Next log will be log_%03d.csv\n", maxIdx, logIndex);
 }
 
+String SDLogger::findLatestLogFile() {
+    char nameBuf[32];
+    for (int i = logIndex - 1; i >= 1; i--) {
+        sprintf(nameBuf, "/log_%03d.csv", i);
+        if (SD.exists(nameBuf)) {
+            return String(nameBuf);
+        }
+    }
+    return String();
+}
+
 String SDLogger::getNextFileName() {
     char nameBuf[32];
     sprintf(nameBuf, "/log_%03d.csv", logIndex);
@@ -109,6 +124,11 @@ String SDLogger::getNextFileName() {
 }
 
 void SDLogger::startLogging() {
+    if (playbackActive) {
+        Serial.println("Cannot start logging while playback is active.");
+        return;
+    }
+
     // Only re-check if card is not already successfully detected to avoid multiple begin() locking issues
     if (!cardPresent) {
         checkSDCard();
@@ -146,6 +166,128 @@ void SDLogger::stopLogging() {
         purpleBlink = true; // Indicate logging stopped
         Serial.println("Stopped logging to SD Card.");
     }
+}
+
+void SDLogger::startPlayback(String filename) {
+    if (loggingActive) {
+        Serial.println("Cannot start playback while logging is active.");
+        return;
+    }
+    if (playbackActive) stopPlayback();
+
+    checkSDCard();
+    if (!cardPresent) {
+        Serial.println("Failed to start playback: SD Card not present.");
+        orangeBlink = true;
+        return;
+    }
+
+    playFile = SD.open(filename, FILE_READ);
+    if (playFile) {
+        playbackActive = true;
+        fileBaseTime = 0;
+        hasNextFrame = false;
+        playBaseTime = micros();
+        Serial.print("Attempting playback of: ");
+        Serial.println(filename);
+    } else {
+        Serial.printf("Failed to open file for playback: %s\n", filename.c_str());
+        orangeBlink = true;
+    }
+}
+
+void SDLogger::stopPlayback() {
+    if (playbackActive) {
+        playFile.close();
+        playbackActive = false;
+        hasNextFrame = false;
+        purpleBlink = true; // Briefly flash purple on stop
+        Serial.println("Stopped SD Card playback.");
+    }
+}
+
+bool SDLogger::parseNextPlayFrame() {
+    if (!playFile || !playFile.available()) return false;
+
+    String line;
+    while (playFile.available()) {
+        line = playFile.readStringUntil('\n');
+        line.trim();
+        if (line.length() > 0 && !line.startsWith("Time")) {
+            break; // Valid data row found!
+        }
+        if (!playFile.available()) return false;
+    }
+
+    if (line.length() == 0) return false;
+
+    // Split columns by comma
+    int commaIndex[16];
+    int count = 0;
+    int pos = 0;
+    while ((pos = line.indexOf(',', pos)) != -1 && count < 16) {
+        commaIndex[count++] = pos;
+        pos++;
+    }
+
+    if (count < 5) {
+        // Less than 5 commas means invalid line formatting
+        return false;
+    }
+
+    // 1. Time Stamp
+    String timeStr = line.substring(0, commaIndex[0]);
+    nextFrameTime = strtoul(timeStr.c_str(), NULL, 10);
+
+    // 2. ID (hex string, with or without 0x/0X prefix)
+    String idStr = line.substring(commaIndex[0] + 1, commaIndex[1]);
+    idStr.trim();
+    if (idStr.startsWith("0x") || idStr.startsWith("0X")) {
+        nextFrame.id = strtoul(idStr.c_str(), NULL, 16);
+    } else {
+        nextFrame.id = strtoul(idStr.c_str(), NULL, 16);
+    }
+
+    // 3. Extended
+    String extStr = line.substring(commaIndex[1] + 1, commaIndex[2]);
+    extStr.toUpperCase();
+    nextFrame.extended = (extStr == "TRUE" || extStr == "1");
+    if (nextFrame.extended) {
+        nextFrame.id &= 0x1FFFFFFF;
+    } else {
+        nextFrame.id &= 0x7FF;
+    }
+
+    // 4. Dir (ignored during transmit)
+
+    // 5. Bus
+    String busStr = line.substring(commaIndex[3] + 1, commaIndex[4]);
+    nextFrameBus = busStr.toInt();
+    if (nextFrameBus < 0 || nextFrameBus >= NUM_BUSES) {
+        nextFrameBus = 0;
+    }
+
+    // 6. LEN
+    String lenStr = line.substring(commaIndex[4] + 1, commaIndex[5]);
+    nextFrame.length = lenStr.toInt();
+    if (nextFrame.length > 8) nextFrame.length = 8;
+
+    // 7. Data bytes (up to nextFrame.length)
+    int dataStartIdx = 5;
+    for (int d = 0; d < nextFrame.length; d++) {
+        if (dataStartIdx + d >= count) {
+            nextFrame.data.uint8[d] = 0;
+            continue;
+        }
+        int start = commaIndex[dataStartIdx + d] + 1;
+        int end = (dataStartIdx + d + 1 < count) ? commaIndex[dataStartIdx + d + 1] : line.length();
+        String byteStr = line.substring(start, end);
+        byteStr.trim();
+        nextFrame.data.uint8[d] = (uint8_t)strtoul(byteStr.c_str(), NULL, 16);
+    }
+
+    nextFrame.rtr = 0;
+    return true;
 }
 
 void SDLogger::logFrame(CAN_FRAME &frame, int bus, int dir) {
@@ -208,6 +350,37 @@ void SDLogger::loop() {
         Serial.println("Committed SD log to disk.");
     }
 
+    // Handle non-blocking SD playback ticks
+    if (playbackActive && playFile) {
+        if (!hasNextFrame) {
+            if (parseNextPlayFrame()) {
+                hasNextFrame = true;
+                if (fileBaseTime == 0) {
+                    fileBaseTime = nextFrameTime;
+                    playBaseTime = micros();
+                }
+            } else {
+                stopPlayback();
+            }
+        }
+
+        if (hasNextFrame) {
+            uint32_t elapsedMicros = micros() - playBaseTime;
+            uint32_t fileElapsedMicros = nextFrameTime - fileBaseTime;
+
+            if (elapsedMicros >= fileElapsedMicros) {
+                // Send frame on CAN bus
+                canManager.sendFrame(canBuses[nextFrameBus], nextFrame);
+
+                // Trigger TX LED traffic animation
+                extern uint32_t lastTxTraffic;
+                lastTxTraffic = millis();
+
+                hasNextFrame = false; // Move to next frame
+            }
+        }
+    }
+
     // Button 1 (D15) handler: Start logging if held > 2s, stop if held > 1s
     bool btn1State = (digitalRead(15) == HIGH);
     if (btn1State) {
@@ -231,7 +404,7 @@ void SDLogger::loop() {
         }
     }
 
-    // Button 2 (D34) handler: Check SD card status on release
+    // Button 2 (D34) handler: Hold > 3s starts playback, normal click stops playback
     bool btn2State = (digitalRead(34) == HIGH);
     if (btn2State) {
         if (!btn2WasPressed) {
@@ -240,11 +413,35 @@ void SDLogger::loop() {
         }
     } else {
         if (btn2WasPressed) {
-            checkSDCard();
-            if (cardPresent) {
-                yellowBlink = true; // Trigger Yellow status blink
+            uint32_t pressDuration = millis() - btn2PressStart;
+            if (playbackActive) {
+                // Any normal click when playback is active stops it
+                stopPlayback();
             } else {
-                orangeBlink = true; // Trigger Orange status blink
+                if (pressDuration >= 3000) {
+                    // Hold for more than 3 seconds starts playback
+                    if (SD.exists("/TX.csv")) {
+                        startPlayback("/TX.csv");
+                    } else if (SD.exists("/tx.csv")) {
+                        startPlayback("/tx.csv");
+                    } else {
+                        String latestLog = findLatestLogFile();
+                        if (latestLog.length() > 0) {
+                            startPlayback(latestLog);
+                        } else {
+                            Serial.println("No TX.csv or logs found on SD card.");
+                            orangeBlink = true;
+                        }
+                    }
+                } else {
+                    // Normal click checks SD card
+                    checkSDCard();
+                    if (cardPresent) {
+                        yellowBlink = true; // Trigger Yellow status blink
+                    } else {
+                        orangeBlink = true; // Trigger Orange status blink
+                    }
+                }
             }
             btn2WasPressed = false;
         }
