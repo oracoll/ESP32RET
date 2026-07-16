@@ -19,8 +19,13 @@ void SDLogger::setup() {
     pinMode(15, INPUT_PULLDOWN);
     pinMode(34, INPUT); // D34 is input-only, no internal pull-downs in hardware
 
-    // Initialize SPI on pins 18, 19, 23, 5
-    SPI.begin(18, 19, 23, 5);
+    // Configure CS pin (5) as output and drive it HIGH to unselect the card initially
+    pinMode(5, OUTPUT);
+    digitalWrite(5, HIGH);
+    delay(10);
+
+    // Initialize SPI on pins 18, 19, 23 (pass -1 to prevent SPI driver from seizing Pin 5)
+    SPI.begin(18, 19, 23, -1);
 
     // Check if card is present on boot
     checkSDCard();
@@ -31,7 +36,7 @@ void SDLogger::checkSDCard() {
 
     // If not currently detected, attempt first-time initialization
     if (!cardPresent) {
-        if (SD.begin(5, SPI)) {
+        if (SD.begin(5, SPI, 4000000)) {
             cardPresent = true;
             Serial.println("SD Card detected and initialized successfully!");
         } else {
