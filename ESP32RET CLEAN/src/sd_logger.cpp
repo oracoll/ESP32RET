@@ -27,6 +27,9 @@ void SDLogger::setup() {
     // Initialize SPI on pins 18, 19, 23 (pass -1 to prevent SPI driver from seizing Pin 5)
     SPI.begin(18, 19, 23, -1);
 
+    // Wait for SD card power to stabilize on boot (some cards need up to 200ms after power-up)
+    delay(200);
+
     // Check if card is present on boot
     checkSDCard();
 }
