@@ -151,6 +151,9 @@ void loadSettings()
         strcpy(deviceName, EVTV_NAME);
         strcpy(otaHost, "media3.evtv.me");
         strcpy(otaFilename, "/esp32ret.bin");
+
+        // Re-route CAN0 to GPIO 16 (RX) and GPIO 17 (TX) to resolve the hardware pin conflict on GPIO 5 (used for SD Card CS)
+        CAN0.setCANPins(GPIO_NUM_16, GPIO_NUM_17);
     }
 
     if (settings.systemType == 2)

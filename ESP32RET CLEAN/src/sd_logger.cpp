@@ -19,16 +19,28 @@ void SDLogger::setup() {
     pinMode(15, INPUT_PULLDOWN);
     pinMode(34, INPUT); // D34 is input-only, no internal pull-downs in hardware
 
+    // Enable internal pull-ups on SPI pins to ensure stable levels and prevent open-drain float on MISO (essential for many SD card adapters)
+    pinMode(19, INPUT_PULLUP); // MISO
+    pinMode(23, INPUT_PULLUP); // MOSI
+    pinMode(18, INPUT_PULLUP); // SCK
+
     // Configure CS pin (5) as output and drive it HIGH to unselect the card initially
     pinMode(5, OUTPUT);
     digitalWrite(5, HIGH);
-    delay(10);
+
+    // Provide a solid delay for SD card internal controllers to boot up completely
+    delay(500);
 
     // Initialize SPI on pins 18, 19, 23 (pass -1 to prevent SPI driver from seizing Pin 5)
     SPI.begin(18, 19, 23, -1);
 
-    // Wait for SD card power to stabilize on boot (some cards need up to 200ms after power-up)
-    delay(200);
+    // Generate at least 74 clock cycles with CS HIGH (120 cycles here) to cleanly put the SD card into SPI mode before initialization
+    SPI.beginTransaction(SPISettings(400000, MSBFIRST, SPI_MODE0));
+    digitalWrite(5, HIGH);
+    for (int i = 0; i < 15; i++) {
+        SPI.transfer(0xFF);
+    }
+    SPI.endTransaction();
 
     // Check if card is present on boot
     checkSDCard();
