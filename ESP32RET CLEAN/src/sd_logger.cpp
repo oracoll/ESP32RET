@@ -130,8 +130,8 @@ void SDLogger::startLogging() {
         Serial.print("Started logging to: ");
         Serial.println(currentLogFilename);
 
-        // Write SavvyCAN CSV header row with Tab separation
-        logFile.print("Time Stamp\tID\tExtended\tDir\tBus\tLEN\tD1\tD2\tD3\tD4\tD5\tD6\tD7\tD8\n");
+        // Write SavvyCAN CSV header row with Comma separation for perfect Excel columns layout
+        logFile.print("Time Stamp,ID,Extended,Dir,Bus,LEN,D1,D2,D3,D4,D5,D6,D7,D8\n");
         logFile.flush();
     } else {
         Serial.println("Failed to open log file for writing.");
@@ -151,21 +151,21 @@ void SDLogger::stopLogging() {
 void SDLogger::logFrame(CAN_FRAME &frame, int bus, int dir) {
     if (!loggingActive || !logFile) return;
 
-    // Log in SavvyCAN tab-separated format
-    // Format: Time Stamp\tID\tExtended\tDir\tBus\tLEN\tD1\tD2\tD3\tD4\tD5\tD6\tD7\tD8
-    logFile.printf("%u\t0x%X\t%s\t%d\t%d\t%d",
+    // Log in SavvyCAN standard CSV format
+    // Format: Time Stamp,ID,Extended,Dir,Bus,LEN,D1,D2,D3,D4,D5,D6,D7,D8
+    logFile.printf("%u,%08X,%s,%s,%d,%d",
                    micros(),
                    frame.id,
-                   frame.extended ? "true" : "false",
-                   dir,
+                   frame.extended ? "TRUE" : "FALSE",
+                   dir == 0 ? "Rx" : "Tx",
                    bus,
                    frame.length);
 
     for (int i = 0; i < 8; i++) {
         if (i < frame.length) {
-            logFile.printf("\t%02X", frame.data.uint8[i]);
+            logFile.printf(",%02X", frame.data.uint8[i]);
         } else {
-            logFile.print("\t");
+            logFile.print(",");
         }
     }
     logFile.print("\n");
@@ -175,19 +175,19 @@ void SDLogger::logFrameFD(CAN_FRAME_FD &frame, int bus, int dir) {
     if (!loggingActive || !logFile) return;
 
     // Fallback: log FD frame as standard CAN frame in the CSV (standard loggers usually downsample or format up to 8 bytes for CSV)
-    logFile.printf("%u\t0x%X\t%s\t%d\t%d\t%d",
+    logFile.printf("%u,%08X,%s,%s,%d,%d",
                    micros(),
                    frame.id,
-                   frame.extended ? "true" : "false",
-                   dir,
+                   frame.extended ? "TRUE" : "FALSE",
+                   dir == 0 ? "Rx" : "Tx",
                    bus,
                    frame.length > 8 ? 8 : frame.length);
 
     for (int i = 0; i < 8; i++) {
         if (i < frame.length) {
-            logFile.printf("\t%02X", frame.data.uint8[i]);
+            logFile.printf(",%02X", frame.data.uint8[i]);
         } else {
-            logFile.print("\t");
+            logFile.print(",");
         }
     }
     logFile.print("\n");
