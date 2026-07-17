@@ -416,8 +416,18 @@ void SDLogger::loop() {
         }
     }
 
+    // Read raw Button 1 state and apply robust 50ms software debouncing
+    bool rawBtn1 = (digitalRead(15) == HIGH);
+    static bool btn1State = false;
+    static uint32_t lastBtn1Change = 0;
+    if (rawBtn1 != btn1State) {
+        if (millis() - lastBtn1Change > 50) {
+            btn1State = rawBtn1;
+            lastBtn1Change = millis();
+        }
+    }
+
     // Button 1 (D15) handler: Start logging if held > 2s, stop if held > 1s
-    bool btn1State = (digitalRead(15) == HIGH);
     if (btn1State) {
         if (!btn1WasPressed) {
             btn1PressStart = millis();
@@ -442,8 +452,18 @@ void SDLogger::loop() {
         btn1Triggered = false;
     }
 
+    // Read raw Button 2 state and apply robust 50ms software debouncing
+    bool rawBtn2 = (digitalRead(34) == HIGH);
+    static bool btn2State = false;
+    static uint32_t lastBtn2Change = 0;
+    if (rawBtn2 != btn2State) {
+        if (millis() - lastBtn2Change > 50) {
+            btn2State = rawBtn2;
+            lastBtn2Change = millis();
+        }
+    }
+
     // Button 2 (D34) handler: Hold > 3s starts playback, normal click stops playback
-    bool btn2State = (digitalRead(34) == HIGH);
     if (btn2State) {
         if (!btn2WasPressed) {
             btn2PressStart = millis();
@@ -471,7 +491,6 @@ void SDLogger::loop() {
         }
     } else {
         if (btn2WasPressed) {
-            uint32_t pressDuration = millis() - btn2PressStart;
             if (playbackActive) {
                 // Any normal click when playback is active stops it
                 if (!btn2Triggered) {
