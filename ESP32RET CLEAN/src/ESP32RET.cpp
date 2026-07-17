@@ -152,8 +152,10 @@ void loadSettings()
         strcpy(otaHost, "media3.evtv.me");
         strcpy(otaFilename, "/esp32ret.bin");
 
-        // Re-route SJA1000 (CAN0) RX to GPIO 16 and TX to GPIO 17 to resolve the severe physical conflict on GPIO 4 (used as SD Card CS)
+        // Explicitly set SJA1000 (CAN0) and MCP2517FD (CAN1) pin mappings to avoid hardware conflict
         CAN0.setCANPins(GPIO_NUM_16, GPIO_NUM_17);
+        CAN1.setCSPin(5);
+        CAN1.setINTPin(27);
     }
 
     if (settings.systemType == 2)

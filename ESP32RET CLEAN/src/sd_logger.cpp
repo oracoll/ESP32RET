@@ -27,7 +27,7 @@ SDLogger::SDLogger() {
 
 void SDLogger::setup() {
     pinMode(15, INPUT_PULLDOWN);
-    pinMode(34, INPUT); // D34 is input-only, no internal pull-downs in hardware
+    pinMode(34, INPUT); // D34 button handler
 
     // Enable internal pull-ups on SPI pins to ensure stable levels and prevent open-drain float on MISO (essential for many SD card adapters)
     pinMode(19, INPUT_PULLUP); // MISO
