@@ -134,6 +134,20 @@ void CANManager::sendFrame(CAN_COMMON *bus, CAN_FRAME &frame)
 {
     if (!bus) return;
 
+    // Find the bus index
+    int whichBus = -1;
+    for (int i = 0; i < NUM_BUSES; i++) {
+        if (canBuses[i] == bus) {
+            whichBus = i;
+            break;
+        }
+    }
+
+    if (whichBus == -1) return;
+
+    // Extremely critical safety check: If this CAN bus is not enabled in settings, do NOT transmit!
+    if (!settings.canSettings[whichBus].enabled) return;
+
     // Check if the TWAI (CAN0) transmit queue is full to prevent blocking the CPU thread when no receiver/ACK is on the bus
     if (bus == &CAN0) {
         twai_status_info_t status_info;
@@ -141,11 +155,12 @@ void CANManager::sendFrame(CAN_COMMON *bus, CAN_FRAME &frame)
             if (status_info.msgs_to_tx >= 16) {
                 return; // Skip sending to avoid blocking
             }
+        } else {
+            // SJA1000 driver is not in ESP_OK running state! Skip sending to prevent blocks/crashes!
+            return;
         }
     }
 
-    int whichBus = 0;
-    for (int i = 0; i < NUM_BUSES; i++) if (canBuses[i] == bus) whichBus = i;
     bus->sendFrame(frame);
     addBits(whichBus, frame);
     lastTxTraffic = millis();
@@ -156,6 +171,20 @@ void CANManager::sendFrame(CAN_COMMON *bus, CAN_FRAME_FD &frame)
 {
     if (!bus) return;
 
+    // Find the bus index
+    int whichBus = -1;
+    for (int i = 0; i < NUM_BUSES; i++) {
+        if (canBuses[i] == bus) {
+            whichBus = i;
+            break;
+        }
+    }
+
+    if (whichBus == -1) return;
+
+    // Extremely critical safety check: If this CAN bus is not enabled in settings, do NOT transmit!
+    if (!settings.canSettings[whichBus].enabled) return;
+
     // Check if the TWAI (CAN0) transmit queue is full to prevent blocking the CPU thread when no receiver/ACK is on the bus
     if (bus == &CAN0) {
         twai_status_info_t status_info;
@@ -163,11 +192,12 @@ void CANManager::sendFrame(CAN_COMMON *bus, CAN_FRAME_FD &frame)
             if (status_info.msgs_to_tx >= 16) {
                 return; // Skip sending to avoid blocking
             }
+        } else {
+            // SJA1000 driver is not in ESP_OK running state! Skip sending to prevent blocks/crashes!
+            return;
         }
     }
 
-    int whichBus = 0;
-    for (int i = 0; i < NUM_BUSES; i++) if (canBuses[i] == bus) whichBus = i;
     bus->sendFrameFD(frame);
     addBits(whichBus, frame);
     lastTxTraffic = millis();
