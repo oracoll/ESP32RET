@@ -131,6 +131,7 @@ void CANManager::addBits(int offset, CAN_FRAME_FD &frame)
 
 void CANManager::sendFrame(CAN_COMMON *bus, CAN_FRAME &frame)
 {
+    if (!bus) return;
     int whichBus = 0;
     for (int i = 0; i < NUM_BUSES; i++) if (canBuses[i] == bus) whichBus = i;
     bus->sendFrame(frame);
@@ -141,6 +142,7 @@ void CANManager::sendFrame(CAN_COMMON *bus, CAN_FRAME &frame)
 
 void CANManager::sendFrame(CAN_COMMON *bus, CAN_FRAME_FD &frame)
 {
+    if (!bus) return;
     int whichBus = 0;
     for (int i = 0; i < NUM_BUSES; i++) if (canBuses[i] == bus) whichBus = i;
     bus->sendFrameFD(frame);

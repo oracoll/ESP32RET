@@ -196,6 +196,19 @@ void SDLogger::startPlayback(String filename) {
         playBaseTime = micros();
         Serial.print("Attempting playback of: ");
         Serial.println(filename);
+
+        // Pre-parse the first frame to validate file formatting and align baseline times
+        if (parseNextPlayFrame()) {
+            hasNextFrame = true;
+            fileBaseTime = nextFrameTime;
+            prevFrameTime = nextFrameTime;
+            playBaseTime = micros();
+            Serial.printf("Playback initialized successfully. Baseline time: %u micros\n", fileBaseTime);
+        } else {
+            Serial.println("Failed to parse first playback frame.");
+            stopPlayback();
+            orangeBlink = true;
+        }
     } else {
         Serial.printf("Failed to open file for playback: %s\n", filename.c_str());
         orangeBlink = true;
@@ -216,27 +229,17 @@ void SDLogger::stopPlayback() {
 bool SDLogger::parseNextPlayFrame() {
     if (!playFile || !playFile.available()) return false;
 
-    // Read characters sequentially to prevent blocking the main loop
+    String line;
     while (playFile.available()) {
-        char c = playFile.read();
-        if (c == '\n' || c == '\r') {
-            if (playLineBufferLen > 0) {
-                playLineBuffer[playLineBufferLen] = '\0';
-                String line = String(playLineBuffer);
-                playLineBufferLen = 0; // Reset buffer for next line
-                line.trim();
-
-                if (line.length() > 0 && !line.startsWith("Time")) {
-                    return parseLine(line);
-                }
-            }
-        } else {
-            if (playLineBufferLen < 127) {
-                playLineBuffer[playLineBufferLen++] = c;
-            }
+        line = playFile.readStringUntil('\n');
+        line.trim();
+        if (line.length() > 0 && !line.startsWith("Time")) {
+            break; // Valid data row found!
         }
     }
-    return false;
+
+    if (line.length() == 0) return false;
+    return parseLine(line);
 }
 
 bool SDLogger::parseLine(String line) {
