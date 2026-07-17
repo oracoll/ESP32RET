@@ -6,6 +6,7 @@
 #include "gvret_comm.h"
 #include "lawicel.h"
 #include "sd_logger.h"
+#include "driver/twai.h"
 
 extern uint32_t lastTxTraffic;
 extern uint32_t lastRxTraffic;
@@ -132,6 +133,17 @@ void CANManager::addBits(int offset, CAN_FRAME_FD &frame)
 void CANManager::sendFrame(CAN_COMMON *bus, CAN_FRAME &frame)
 {
     if (!bus) return;
+
+    // Check if the TWAI (CAN0) transmit queue is full to prevent blocking the CPU thread when no receiver/ACK is on the bus
+    if (bus == &CAN0) {
+        twai_status_info_t status_info;
+        if (twai_get_status_info(&status_info) == ESP_OK) {
+            if (status_info.msgs_to_tx >= 16) {
+                return; // Skip sending to avoid blocking
+            }
+        }
+    }
+
     int whichBus = 0;
     for (int i = 0; i < NUM_BUSES; i++) if (canBuses[i] == bus) whichBus = i;
     bus->sendFrame(frame);
@@ -143,6 +155,17 @@ void CANManager::sendFrame(CAN_COMMON *bus, CAN_FRAME &frame)
 void CANManager::sendFrame(CAN_COMMON *bus, CAN_FRAME_FD &frame)
 {
     if (!bus) return;
+
+    // Check if the TWAI (CAN0) transmit queue is full to prevent blocking the CPU thread when no receiver/ACK is on the bus
+    if (bus == &CAN0) {
+        twai_status_info_t status_info;
+        if (twai_get_status_info(&status_info) == ESP_OK) {
+            if (status_info.msgs_to_tx >= 16) {
+                return; // Skip sending to avoid blocking
+            }
+        }
+    }
+
     int whichBus = 0;
     for (int i = 0; i < NUM_BUSES; i++) if (canBuses[i] == bus) whichBus = i;
     bus->sendFrameFD(frame);
