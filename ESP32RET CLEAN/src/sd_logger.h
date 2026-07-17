@@ -45,12 +45,16 @@ private:
     CAN_FRAME nextFrame;
     int nextFrameBus;
     bool hasNextFrame;
+    char playLineBuffer[128];
+    int playLineBufferLen;
 
     // Buttons state
     uint32_t btn1PressStart;
     bool btn1WasPressed;
+    bool btn1Triggered;
     uint32_t btn2PressStart;
     bool btn2WasPressed;
+    bool btn2Triggered;
 
     // Status blink triggers
     bool yellowBlink;
@@ -64,6 +68,7 @@ private:
     String findLatestLogFile();
     void findHighestLogIndex();
     bool parseNextPlayFrame();
+    bool parseLine(String line);
 };
 
 extern SDLogger sdLogger;

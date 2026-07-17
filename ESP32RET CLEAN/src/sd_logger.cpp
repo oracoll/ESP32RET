@@ -10,8 +10,10 @@ SDLogger::SDLogger() {
     logIndex = 1;
     btn1PressStart = 0;
     btn1WasPressed = false;
+    btn1Triggered = false;
     btn2PressStart = 0;
     btn2WasPressed = false;
+    btn2Triggered = false;
     yellowBlink = false;
     orangeBlink = false;
     purpleBlink = false;
@@ -20,6 +22,7 @@ SDLogger::SDLogger() {
     hasNextFrame = false;
     fileBaseTime = 0;
     prevFrameTime = 0;
+    playLineBufferLen = 0;
 }
 
 void SDLogger::setup() {
@@ -189,6 +192,7 @@ void SDLogger::startPlayback(String filename) {
         fileBaseTime = 0;
         prevFrameTime = 0;
         hasNextFrame = false;
+        playLineBufferLen = 0;
         playBaseTime = micros();
         Serial.print("Attempting playback of: ");
         Serial.println(filename);
@@ -203,6 +207,7 @@ void SDLogger::stopPlayback() {
         playFile.close();
         playbackActive = false;
         hasNextFrame = false;
+        playLineBufferLen = 0;
         purpleBlink = true; // Briefly flash purple on stop
         Serial.println("Stopped SD Card playback.");
     }
@@ -211,30 +216,46 @@ void SDLogger::stopPlayback() {
 bool SDLogger::parseNextPlayFrame() {
     if (!playFile || !playFile.available()) return false;
 
-    String line;
+    // Read characters sequentially to prevent blocking the main loop
     while (playFile.available()) {
-        line = playFile.readStringUntil('\n');
-        line.trim();
-        if (line.length() > 0 && !line.startsWith("Time")) {
-            break; // Valid data row found!
+        char c = playFile.read();
+        if (c == '\n' || c == '\r') {
+            if (playLineBufferLen > 0) {
+                playLineBuffer[playLineBufferLen] = '\0';
+                String line = String(playLineBuffer);
+                playLineBufferLen = 0; // Reset buffer for next line
+                line.trim();
+
+                if (line.length() > 0 && !line.startsWith("Time")) {
+                    return parseLine(line);
+                }
+            }
+        } else {
+            if (playLineBufferLen < 127) {
+                playLineBuffer[playLineBufferLen++] = c;
+            }
         }
-        if (!playFile.available()) return false;
+    }
+    return false;
+}
+
+bool SDLogger::parseLine(String line) {
+    // Detect column separator dynamically (supports both Comma-separated and Tab-separated formats)
+    char separator = ',';
+    if (line.indexOf('\t') != -1) {
+        separator = '\t';
     }
 
-    if (line.length() == 0) return false;
-
-    // Split columns by comma
     int commaIndex[16];
     int count = 0;
     int pos = 0;
-    while ((pos = line.indexOf(',', pos)) != -1 && count < 16) {
+    while ((pos = line.indexOf(separator, pos)) != -1 && count < 16) {
         commaIndex[count++] = pos;
         pos++;
     }
 
     if (count < 5) {
-        // Less than 5 commas means invalid line formatting
-        return false;
+        return false; // Invalid CSV line structure
     }
 
     // 1. Time Stamp
@@ -260,7 +281,7 @@ bool SDLogger::parseNextPlayFrame() {
         nextFrame.id &= 0x7FF;
     }
 
-    // 4. Dir (ignored during transmit)
+    // 4. Dir (ignored during playback transmit)
 
     // 5. Bus
     String busStr = line.substring(commaIndex[3] + 1, commaIndex[4]);
@@ -398,21 +419,24 @@ void SDLogger::loop() {
         if (!btn1WasPressed) {
             btn1PressStart = millis();
             btn1WasPressed = true;
-        }
-    } else {
-        if (btn1WasPressed) {
+            btn1Triggered = false;
+        } else if (!btn1Triggered) {
             uint32_t pressDuration = millis() - btn1PressStart;
             if (!loggingActive) {
                 if (pressDuration >= 2000) {
                     startLogging();
+                    btn1Triggered = true;
                 }
             } else {
                 if (pressDuration >= 1000) {
                     stopLogging();
+                    btn1Triggered = true;
                 }
             }
-            btn1WasPressed = false;
         }
+    } else {
+        btn1WasPressed = false;
+        btn1Triggered = false;
     }
 
     // Button 2 (D34) handler: Hold > 3s starts playback, normal click stops playback
@@ -421,30 +445,37 @@ void SDLogger::loop() {
         if (!btn2WasPressed) {
             btn2PressStart = millis();
             btn2WasPressed = true;
+            btn2Triggered = false;
+        } else if (!btn2Triggered) {
+            uint32_t pressDuration = millis() - btn2PressStart;
+            if (!playbackActive && pressDuration >= 3000) {
+                // Hold for more than 3 seconds starts playback immediately while held
+                if (SD.exists("/TX.csv")) {
+                    startPlayback("/TX.csv");
+                } else if (SD.exists("/tx.csv")) {
+                    startPlayback("/tx.csv");
+                } else {
+                    String latestLog = findLatestLogFile();
+                    if (latestLog.length() > 0) {
+                        startPlayback(latestLog);
+                    } else {
+                        Serial.println("No TX.csv or logs found on SD card.");
+                        orangeBlink = true;
+                    }
+                }
+                btn2Triggered = true;
+            }
         }
     } else {
         if (btn2WasPressed) {
             uint32_t pressDuration = millis() - btn2PressStart;
             if (playbackActive) {
                 // Any normal click when playback is active stops it
-                stopPlayback();
+                if (!btn2Triggered) {
+                    stopPlayback();
+                }
             } else {
-                if (pressDuration >= 3000) {
-                    // Hold for more than 3 seconds starts playback
-                    if (SD.exists("/TX.csv")) {
-                        startPlayback("/TX.csv");
-                    } else if (SD.exists("/tx.csv")) {
-                        startPlayback("/tx.csv");
-                    } else {
-                        String latestLog = findLatestLogFile();
-                        if (latestLog.length() > 0) {
-                            startPlayback(latestLog);
-                        } else {
-                            Serial.println("No TX.csv or logs found on SD card.");
-                            orangeBlink = true;
-                        }
-                    }
-                } else {
+                if (!btn2Triggered) {
                     // Normal click checks SD card
                     checkSDCard();
                     if (cardPresent) {
@@ -455,6 +486,7 @@ void SDLogger::loop() {
                 }
             }
             btn2WasPressed = false;
+            btn2Triggered = false;
         }
     }
 }
