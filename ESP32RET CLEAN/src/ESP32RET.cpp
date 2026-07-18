@@ -347,46 +347,47 @@ void loop()
         purpleBlinkActiveUntil = millis() + 1500;
     }
 
-    CRGB ledColor = CRGB::Black;
+    CRGB baseColor = CRGB::Black;
 
-    if (millis() < orangeBlinkActiveUntil) {
-        // Blink Orange (200ms cycle: 100ms orange, 100ms off)
-        ledColor = (millis() % 200 < 100) ? CRGB(255, 60, 0) : CRGB::Black;
+    // Check for SD Card Errors (card missing or explicit write/mount error blinks)
+    bool sdCardError = !sdLogger.isCardPresent();
+    if (sdCardError || (millis() < orangeBlinkActiveUntil)) {
+        // Fast flashing Red (250ms cycle: 125ms Red, 125ms off)
+        baseColor = (millis() % 250 < 125) ? CRGB::Red : CRGB::Black;
     } else if (millis() < yellowBlinkActiveUntil) {
-        // Blink Yellow (200ms cycle: 100ms yellow, 100ms off)
-        ledColor = (millis() % 200 < 100) ? CRGB(255, 255, 0) : CRGB::Black;
+        // Blink Yellow status check (200ms cycle: 100ms yellow, 100ms off)
+        baseColor = (millis() % 200 < 100) ? CRGB(255, 200, 0) : CRGB::Black;
     } else if (millis() < purpleBlinkActiveUntil) {
-        // Blink Purple (200ms cycle: 100ms purple, 100ms off)
-        ledColor = (millis() % 200 < 100) ? CRGB(128, 0, 128) : CRGB::Black;
-    } else if (millis() - lastTxTraffic < 80) {
-        // Blink Red for CAN TX Traffic
-        ledColor = CRGB::Red;
-    } else if (millis() - lastRxTraffic < 80) {
-        // Blink Green for CAN RX Traffic
-        ledColor = CRGB::Green;
+        // Blink Purple status check (200ms cycle: 100ms purple, 100ms off)
+        baseColor = (millis() % 200 < 100) ? CRGB(128, 0, 128) : CRGB::Black;
     } else if (sdLogger.isLoggingActive()) {
-        // Blink fast purple for SD logging active (300ms cycle: 150ms purple, 150ms off)
-        ledColor = (millis() % 300 < 150) ? CRGB(128, 0, 128) : CRGB::Black;
+        // Slow breathing Magenta (Purple) (1600ms cycle: smooth dimming to bright)
+        uint32_t t = millis() % 1600;
+        uint8_t val = (t < 800) ? map(t, 0, 800, 40, 255) : map(t, 800, 1600, 255, 40);
+        baseColor = CRGB(val, 0, val);
     } else if (sdLogger.isPlaybackActive()) {
-        // Blink fast cyan for SD card playback active (300ms cycle: 150ms cyan, 150ms off)
-        ledColor = (millis() % 300 < 150) ? CRGB(0, 255, 255) : CRGB::Black;
+        // Slow breathing Yellow (1600ms cycle: smooth dimming to bright)
+        uint32_t t = millis() % 1600;
+        uint8_t val = (t < 800) ? map(t, 0, 800, 40, 255) : map(t, 800, 1600, 255, 40);
+        baseColor = CRGB(val, (val * 8) / 10, 0); // Warm bright Yellow (Red + 80% Green)
     } else if (millis() - lastHostActivity < 2000) {
-        // Connected to SavvyCAN - Blue Heartbeat (double pulse, 1000ms cycle)
-        uint32_t t = millis() % 1000;
-        uint8_t b = 0;
-        if (t < 150) {
-            b = map(t, 0, 150, 0, 255);
-        } else if (t < 300) {
-            b = map(t, 150, 300, 255, 0);
-        } else if (t < 450) {
-            b = map(t, 300, 450, 0, 255);
-        } else if (t < 600) {
-            b = map(t, 450, 600, 255, 0);
-        }
-        ledColor = CRGB(0, 0, b);
+        // Connected to SavvyCAN: Solid Blue
+        baseColor = CRGB(0, 0, 255);
     } else {
-        // Solid Blue when not connected to SavvyCAN
-        ledColor = CRGB::Blue;
+        // Not connected to SavvyCAN: Slow breathing Blue (2000ms cycle)
+        uint32_t t = millis() % 2000;
+        uint8_t brightness = (t < 1000) ? map(t, 0, 1000, 30, 255) : map(t, 1000, 2000, 255, 30);
+        baseColor = CRGB(0, 0, brightness);
+    }
+
+    // Traffic Overlays (brief 80ms overrides for active frame transfers)
+    CRGB ledColor = baseColor;
+    if (millis() - lastTxTraffic < 80) {
+        // Overlay distinct brief White flash for CAN TX
+        ledColor = CRGB::White;
+    } else if (millis() - lastRxTraffic < 80) {
+        // Overlay distinct brief Green flash for CAN RX
+        ledColor = CRGB::Green;
     }
 
     leds[0] = ledColor;
