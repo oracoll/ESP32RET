@@ -1,5 +1,82 @@
 #include "sd_logger.h"
 #include "can_manager.h"
+#include <esp32_mcp2517fd.h>
+
+#if SOC_TWAI_CONTROLLER_NUM == 2 and ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 2, 0)
+#define MCP_CAN_INST CAN2
+#else
+#define MCP_CAN_INST CAN1
+#endif
+
+static void suspendSpiTasks() {
+    // Suspend CAN1's polled SPI task and reset watcher task if initialized
+    if (settings.systemType == 1 || settings.systemType == 3) {
+        if (MCP_CAN_INST.intTaskFD != NULL) {
+            vTaskSuspend(MCP_CAN_INST.intTaskFD);
+        }
+        if (MCP_CAN_INST.taskHandleReset != NULL) {
+            vTaskSuspend(MCP_CAN_INST.taskHandleReset);
+        }
+    } else if (settings.systemType == 2) {
+        if (MCP_CAN_INST.intTaskFD != NULL) {
+            vTaskSuspend(MCP_CAN_INST.intTaskFD);
+        }
+        if (MCP_CAN_INST.taskHandleReset != NULL) {
+            vTaskSuspend(MCP_CAN_INST.taskHandleReset);
+        }
+        for (int i = 2; i < 5; i++) {
+            if (canBuses[i] != nullptr) {
+                MCP2517FD *mcp = (MCP2517FD *)canBuses[i];
+                if (mcp->intTaskFD != NULL) {
+                    vTaskSuspend(mcp->intTaskFD);
+                }
+                if (mcp->taskHandleReset != NULL) {
+                    vTaskSuspend(mcp->taskHandleReset);
+                }
+            }
+        }
+    }
+}
+
+static void resumeSpiTasks() {
+    // Resume CAN1's polled SPI task and reset watcher task if suspended
+    if (settings.systemType == 1 || settings.systemType == 3) {
+        if (MCP_CAN_INST.intTaskFD != NULL) {
+            vTaskResume(MCP_CAN_INST.intTaskFD);
+        }
+        if (MCP_CAN_INST.taskHandleReset != NULL) {
+            vTaskResume(MCP_CAN_INST.taskHandleReset);
+        }
+    } else if (settings.systemType == 2) {
+        if (MCP_CAN_INST.intTaskFD != NULL) {
+            vTaskResume(MCP_CAN_INST.intTaskFD);
+        }
+        if (MCP_CAN_INST.taskHandleReset != NULL) {
+            vTaskResume(MCP_CAN_INST.taskHandleReset);
+        }
+        for (int i = 2; i < 5; i++) {
+            if (canBuses[i] != nullptr) {
+                MCP2517FD *mcp = (MCP2517FD *)canBuses[i];
+                if (mcp->intTaskFD != NULL) {
+                    vTaskResume(mcp->intTaskFD);
+                }
+                if (mcp->taskHandleReset != NULL) {
+                    vTaskResume(mcp->taskHandleReset);
+                }
+            }
+        }
+    }
+}
+
+class SPILock {
+public:
+    SPILock() {
+        suspendSpiTasks();
+    }
+    ~SPILock() {
+        resumeSpiTasks();
+    }
+};
 
 SDLogger sdLogger;
 
@@ -59,6 +136,7 @@ void SDLogger::setup() {
 void SDLogger::checkSDCard() {
     if (loggingActive || playbackActive) return; // Do not interrupt active logging or playback
 
+    SPILock lock;
     // If not currently detected, attempt first-time initialization
     if (!cardPresent) {
         if (SD.begin(4, SPI, 4000000)) {
@@ -82,6 +160,7 @@ void SDLogger::checkSDCard() {
 }
 
 void SDLogger::findHighestLogIndex() {
+    SPILock lock;
     File root = SD.open("/");
     if (!root) return;
 
@@ -110,6 +189,7 @@ void SDLogger::findHighestLogIndex() {
 }
 
 String SDLogger::findLatestLogFile() {
+    SPILock lock;
     char nameBuf[32];
     for (int i = logIndex - 1; i >= 1; i--) {
         sprintf(nameBuf, "/log_%03d.csv", i);
@@ -138,6 +218,7 @@ void SDLogger::startLogging() {
         checkSDCard();
     }
 
+    SPILock lock;
     if (!cardPresent) {
         Serial.println("Failed to start logging: SD Card not present.");
         orangeBlink = true;
@@ -165,6 +246,7 @@ void SDLogger::startLogging() {
 
 void SDLogger::stopLogging() {
     if (loggingActive) {
+        SPILock lock;
         logFile.close();
         loggingActive = false;
         purpleBlink = true; // Indicate logging stopped
@@ -180,6 +262,8 @@ void SDLogger::startPlayback(String filename) {
     if (playbackActive) stopPlayback();
 
     checkSDCard();
+
+    SPILock lock;
     if (!cardPresent) {
         Serial.println("Failed to start playback: SD Card not present.");
         orangeBlink = true;
@@ -217,6 +301,7 @@ void SDLogger::startPlayback(String filename) {
 
 void SDLogger::stopPlayback() {
     if (playbackActive) {
+        SPILock lock;
         playFile.close();
         playbackActive = false;
         hasNextFrame = false;
@@ -227,6 +312,7 @@ void SDLogger::stopPlayback() {
 }
 
 bool SDLogger::parseNextPlayFrame() {
+    SPILock lock;
     if (!playFile || !playFile.available()) return false;
 
     String line;
@@ -319,6 +405,7 @@ bool SDLogger::parseLine(String line) {
 void SDLogger::logFrame(CAN_FRAME &frame, int bus, int dir) {
     if (!loggingActive || !logFile) return;
 
+    SPILock lock;
     // Log in SavvyCAN standard CSV format
     // Format: Time Stamp,ID,Extended,Dir,Bus,LEN,D1,D2,D3,D4,D5,D6,D7,D8
     logFile.printf("%u,%08X,%s,%s,%d,%d",
@@ -342,6 +429,7 @@ void SDLogger::logFrame(CAN_FRAME &frame, int bus, int dir) {
 void SDLogger::logFrameFD(CAN_FRAME_FD &frame, int bus, int dir) {
     if (!loggingActive || !logFile) return;
 
+    SPILock lock;
     // Fallback: log FD frame as standard CAN frame in the CSV (standard loggers usually downsample or format up to 8 bytes for CSV)
     logFile.printf("%u,%08X,%s,%s,%d,%d",
                    micros(),
@@ -364,12 +452,14 @@ void SDLogger::logFrameFD(CAN_FRAME_FD &frame, int bus, int dir) {
 void SDLogger::loop() {
     // Periodically flush the file to protect against data loss
     if (loggingActive && logFile && (millis() - lastFlush > 500)) {
+        SPILock lock;
         logFile.flush();
         lastFlush = millis();
     }
 
     // Auto-commit (close and re-open in append mode) every 5 seconds to guarantee directory structure writes
     if (loggingActive && logFile && (millis() - lastReopen > 5000)) {
+        SPILock lock;
         logFile.close();
         logFile = SD.open(currentLogFilename, FILE_APPEND);
         lastReopen = millis();
@@ -473,6 +563,7 @@ void SDLogger::loop() {
             uint32_t pressDuration = millis() - btn2PressStart;
             if (!playbackActive && pressDuration >= 3000) {
                 // Hold for more than 3 seconds starts playback immediately while held
+                SPILock lock;
                 if (SD.exists("/TX.csv")) {
                     startPlayback("/TX.csv");
                 } else if (SD.exists("/tx.csv")) {
