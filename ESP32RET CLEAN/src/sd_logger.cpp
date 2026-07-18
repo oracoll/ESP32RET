@@ -75,12 +75,12 @@ public:
     SPILock() {
         suspendSpiTasks();
         if (sdMutex != NULL) {
-            xSemaphoreTake(sdMutex, portMAX_DELAY);
+            xSemaphoreTakeRecursive(sdMutex, portMAX_DELAY);
         }
     }
     ~SPILock() {
         if (sdMutex != NULL) {
-            xSemaphoreGive(sdMutex);
+            xSemaphoreGiveRecursive(sdMutex);
         }
         resumeSpiTasks();
     }
@@ -176,8 +176,8 @@ void SDLogger::setup() {
     }
     SPI.endTransaction();
 
-    // Initialize FreeRTOS mutex for thread safety
-    sdMutex = xSemaphoreCreateMutex();
+    // Initialize FreeRTOS recursive mutex for safe nested task locking
+    sdMutex = xSemaphoreCreateRecursiveMutex();
 
     // Initialize FreeRTOS queue and background task
     logQueue = xQueueCreate(256, sizeof(LogQueueItem));
