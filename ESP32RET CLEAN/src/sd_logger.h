@@ -40,8 +40,21 @@ public:
     void writeLoggedFrameToFile(const LogQueueItem &item);
     void processPlaybackTick();
     void processPeriodicCommit();
+    void processStateTransitions();
 
 private:
+    // State change request flags
+    volatile bool requestLoggingStart;
+    volatile bool requestLoggingStop;
+    volatile bool requestPlaybackStart;
+    volatile bool requestPlaybackStop;
+    String requestPlayFilename;
+
+    void executeStartLogging();
+    void executeStopLogging();
+    void executeStartPlayback(String filename);
+    void executeStopPlayback();
+
     bool cardPresent;
     bool loggingActive;
     bool playbackActive;

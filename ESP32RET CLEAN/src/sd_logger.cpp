@@ -9,63 +9,11 @@
 #endif
 
 static void suspendSpiTasks() {
-    // Suspend CAN1's polled SPI task and reset watcher task if initialized
-    if (settings.systemType == 1 || settings.systemType == 3) {
-        if (MCP_CAN_INST.intTaskFD != NULL) {
-            vTaskSuspend(MCP_CAN_INST.intTaskFD);
-        }
-        if (MCP_CAN_INST.taskHandleReset != NULL) {
-            vTaskSuspend(MCP_CAN_INST.taskHandleReset);
-        }
-    } else if (settings.systemType == 2) {
-        if (MCP_CAN_INST.intTaskFD != NULL) {
-            vTaskSuspend(MCP_CAN_INST.intTaskFD);
-        }
-        if (MCP_CAN_INST.taskHandleReset != NULL) {
-            vTaskSuspend(MCP_CAN_INST.taskHandleReset);
-        }
-        for (int i = 2; i < 5; i++) {
-            if (canBuses[i] != nullptr) {
-                MCP2517FD *mcp = (MCP2517FD *)canBuses[i];
-                if (mcp->intTaskFD != NULL) {
-                    vTaskSuspend(mcp->intTaskFD);
-                }
-                if (mcp->taskHandleReset != NULL) {
-                    vTaskSuspend(mcp->taskHandleReset);
-                }
-            }
-        }
-    }
+    // Left empty: SPI mutual exclusion is handled safely via recursive mutexes instead of task suspension
 }
 
 static void resumeSpiTasks() {
-    // Resume CAN1's polled SPI task and reset watcher task if suspended
-    if (settings.systemType == 1 || settings.systemType == 3) {
-        if (MCP_CAN_INST.intTaskFD != NULL) {
-            vTaskResume(MCP_CAN_INST.intTaskFD);
-        }
-        if (MCP_CAN_INST.taskHandleReset != NULL) {
-            vTaskResume(MCP_CAN_INST.taskHandleReset);
-        }
-    } else if (settings.systemType == 2) {
-        if (MCP_CAN_INST.intTaskFD != NULL) {
-            vTaskResume(MCP_CAN_INST.intTaskFD);
-        }
-        if (MCP_CAN_INST.taskHandleReset != NULL) {
-            vTaskResume(MCP_CAN_INST.taskHandleReset);
-        }
-        for (int i = 2; i < 5; i++) {
-            if (canBuses[i] != nullptr) {
-                MCP2517FD *mcp = (MCP2517FD *)canBuses[i];
-                if (mcp->intTaskFD != NULL) {
-                    vTaskResume(mcp->intTaskFD);
-                }
-                if (mcp->taskHandleReset != NULL) {
-                    vTaskResume(mcp->taskHandleReset);
-                }
-            }
-        }
-    }
+    // Left empty: SPI mutual exclusion is handled safely via recursive mutexes instead of task suspension
 }
 
 static SemaphoreHandle_t sdMutex = NULL;
@@ -91,6 +39,9 @@ static TaskHandle_t sdLoggerTaskHandle = NULL;
 
 void vSDLoggerTask(void *pvParameters) {
     while (true) {
+        // 0. Handle state change requests on the correct thread context
+        sdLogger.processStateTransitions();
+
         // 1. Process logging queue
         if (logQueue != NULL) {
             LogQueueItem item;
@@ -131,6 +82,11 @@ SDLogger::SDLogger() {
     cardPresent = false;
     loggingActive = false;
     playbackActive = false;
+    requestLoggingStart = false;
+    requestLoggingStop = false;
+    requestPlaybackStart = false;
+    requestPlaybackStop = false;
+    requestPlayFilename = "";
     logIndex = 1;
     btn1PressStart = 0;
     btn1WasPressed = false;
@@ -266,23 +222,45 @@ String SDLogger::getNextFileName() {
 }
 
 void SDLogger::startLogging() {
-    if (playbackActive) {
+    if (loggingActive || requestLoggingStart) return;
+    if (playbackActive || requestPlaybackStart) {
         Serial.println("Cannot start logging while playback is active.");
         return;
     }
+    requestLoggingStart = true;
+}
 
-    // Only re-check if card is not already successfully detected to avoid multiple begin() locking issues
+void SDLogger::stopLogging() {
+    if (!loggingActive || requestLoggingStop) return;
+    requestLoggingStop = true;
+}
+
+void SDLogger::startPlayback(String filename) {
+    if (loggingActive || requestLoggingStart) {
+        Serial.println("Cannot start playback while logging is active.");
+        return;
+    }
+    requestPlayFilename = filename;
+    requestPlaybackStart = true;
+}
+
+void SDLogger::stopPlayback() {
+    if (!playbackActive || requestPlaybackStop) return;
+    requestPlaybackStop = true;
+}
+
+void SDLogger::executeStartLogging() {
+    if (playbackActive) return;
     if (!cardPresent) {
         checkSDCard();
     }
-
-    SPILock lock;
     if (!cardPresent) {
         Serial.println("Failed to start logging: SD Card not present.");
         orangeBlink = true;
         return;
     }
 
+    SPILock lock;
     currentLogFilename = getNextFileName();
     logFile = SD.open(currentLogFilename, FILE_WRITE);
     if (logFile) {
@@ -302,7 +280,7 @@ void SDLogger::startLogging() {
     }
 }
 
-void SDLogger::stopLogging() {
+void SDLogger::executeStopLogging() {
     if (loggingActive) {
         SPILock lock;
         logFile.close();
@@ -312,22 +290,20 @@ void SDLogger::stopLogging() {
     }
 }
 
-void SDLogger::startPlayback(String filename) {
-    if (loggingActive) {
-        Serial.println("Cannot start playback while logging is active.");
-        return;
+void SDLogger::executeStartPlayback(String filename) {
+    if (loggingActive) return;
+    if (playbackActive) executeStopPlayback();
+
+    if (!cardPresent) {
+        checkSDCard();
     }
-    if (playbackActive) stopPlayback();
-
-    checkSDCard();
-
-    SPILock lock;
     if (!cardPresent) {
         Serial.println("Failed to start playback: SD Card not present.");
         orangeBlink = true;
         return;
     }
 
+    SPILock lock;
     playFile = SD.open(filename, FILE_READ);
     if (playFile) {
         playbackActive = true;
@@ -348,7 +324,7 @@ void SDLogger::startPlayback(String filename) {
             Serial.printf("Playback initialized successfully. Baseline time: %u micros\n", fileBaseTime);
         } else {
             Serial.println("Failed to parse first playback frame.");
-            stopPlayback();
+            executeStopPlayback();
             orangeBlink = true;
         }
     } else {
@@ -357,7 +333,7 @@ void SDLogger::startPlayback(String filename) {
     }
 }
 
-void SDLogger::stopPlayback() {
+void SDLogger::executeStopPlayback() {
     if (playbackActive) {
         SPILock lock;
         playFile.close();
@@ -366,6 +342,25 @@ void SDLogger::stopPlayback() {
         playLineBufferLen = 0;
         purpleBlink = true; // Briefly flash purple on stop
         Serial.println("Stopped SD Card playback.");
+    }
+}
+
+void SDLogger::processStateTransitions() {
+    if (requestLoggingStart) {
+        requestLoggingStart = false;
+        executeStartLogging();
+    }
+    if (requestLoggingStop) {
+        requestLoggingStop = false;
+        executeStopLogging();
+    }
+    if (requestPlaybackStart) {
+        requestPlaybackStart = false;
+        executeStartPlayback(requestPlayFilename);
+    }
+    if (requestPlaybackStop) {
+        requestPlaybackStop = false;
+        executeStopPlayback();
     }
 }
 
