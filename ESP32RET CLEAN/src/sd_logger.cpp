@@ -262,6 +262,7 @@ void SDLogger::executeStartLogging() {
 
     SPILock lock;
     currentLogFilename = getNextFileName();
+    Serial.printf("Opening file for logging: %s\n", currentLogFilename.c_str());
     logFile = SD.open(currentLogFilename, FILE_WRITE);
     if (logFile) {
         loggingActive = true;
@@ -272,8 +273,9 @@ void SDLogger::executeStartLogging() {
         Serial.println(currentLogFilename);
 
         // Write SavvyCAN CSV header row with Comma separation for perfect Excel columns layout
-        logFile.print("Time Stamp,ID,Extended,Dir,Bus,LEN,D1,D2,D3,D4,D5,D6,D7,D8\n");
+        int written = logFile.print("Time Stamp,ID,Extended,Dir,Bus,LEN,D1,D2,D3,D4,D5,D6,D7,D8\n");
         logFile.flush();
+        Serial.printf("Header written to file: %d bytes.\n", written);
     } else {
         Serial.println("Failed to open log file for writing.");
         orangeBlink = true;
@@ -283,10 +285,11 @@ void SDLogger::executeStartLogging() {
 void SDLogger::executeStopLogging() {
     if (loggingActive) {
         SPILock lock;
+        logFile.flush();
         logFile.close();
         loggingActive = false;
         purpleBlink = true; // Indicate logging stopped
-        Serial.println("Stopped logging to SD Card.");
+        Serial.println("Stopped logging to SD Card. File closed cleanly.");
     }
 }
 
@@ -514,20 +517,12 @@ void SDLogger::writeLoggedFrameToFile(const LogQueueItem &item) {
 }
 
 void SDLogger::processPeriodicCommit() {
-    // Periodically flush the file to protect against data loss
-    if (loggingActive && logFile && (millis() - lastFlush > 500)) {
+    // Periodically flush the file every 1 second to protect against data loss and update FAT structures
+    if (loggingActive && logFile && (millis() - lastFlush > 1000)) {
         SPILock lock;
         logFile.flush();
         lastFlush = millis();
-    }
-
-    // Auto-commit (close and re-open in append mode) every 5 seconds to guarantee directory structure writes
-    if (loggingActive && logFile && (millis() - lastReopen > 5000)) {
-        SPILock lock;
-        logFile.close();
-        logFile = SD.open(currentLogFilename, FILE_APPEND);
-        lastReopen = millis();
-        Serial.println("Committed SD log to disk.");
+        Serial.println("Flushed SD log to disk.");
     }
 }
 
