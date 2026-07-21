@@ -1,5 +1,80 @@
 #include "sd_logger.h"
 #include "can_manager.h"
+#include <esp32_mcp2517fd.h>
+
+#if SOC_TWAI_CONTROLLER_NUM == 2 and ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 2, 0)
+#define MCP_CAN_INST CAN2
+#else
+#define MCP_CAN_INST CAN1
+#endif
+
+static void suspendSpiTasks() {
+    // Left empty: SPI mutual exclusion is handled safely via recursive mutexes instead of task suspension
+}
+
+static void resumeSpiTasks() {
+    // Left empty: SPI mutual exclusion is handled safely via recursive mutexes instead of task suspension
+}
+
+static SemaphoreHandle_t sdMutex = NULL;
+
+class SPILock {
+public:
+    SPILock() {
+        suspendSpiTasks();
+        if (sdMutex != NULL) {
+            xSemaphoreTakeRecursive(sdMutex, portMAX_DELAY);
+        }
+    }
+    ~SPILock() {
+        if (sdMutex != NULL) {
+            xSemaphoreGiveRecursive(sdMutex);
+        }
+        resumeSpiTasks();
+    }
+};
+
+static QueueHandle_t logQueue = NULL;
+static TaskHandle_t sdLoggerTaskHandle = NULL;
+
+void vSDLoggerTask(void *pvParameters) {
+    while (true) {
+        // 0. Handle state change requests on the correct thread context
+        sdLogger.processStateTransitions();
+
+        // 1. Process logging queue
+        if (logQueue != NULL) {
+            LogQueueItem item;
+            int count = 0;
+            // Process up to 15 frames per task iteration to stay responsive
+            while (count < 15 && xQueueReceive(logQueue, &item, 0) == pdTRUE) {
+                sdLogger.writeLoggedFrameToFile(item);
+                count++;
+            }
+        }
+
+        // 2. Process playback ticks (prioritize SavvyCAN active USB connection if connected)
+        if (sdLogger.isPlaybackActive()) {
+            extern uint32_t lastHostActivity;
+            if (millis() - lastHostActivity < 2000) {
+                Serial.println("SavvyCAN connection active. Prioritizing SavvyCAN and stopping SD Playback.");
+                sdLogger.stopPlayback();
+            } else {
+                sdLogger.processPlaybackTick();
+            }
+        }
+
+        // 3. Process periodic auto-commit / flush
+        sdLogger.processPeriodicCommit();
+
+        // Dynamic sleep to stay responsive without wasting CPU when idle
+        if (sdLogger.isPlaybackActive()) {
+            vTaskDelay(pdMS_TO_TICKS(1)); // Sleep 1ms during active playback
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(10)); // Sleep 10ms during logging / idle
+        }
+    }
+}
 
 SDLogger sdLogger;
 
@@ -7,6 +82,11 @@ SDLogger::SDLogger() {
     cardPresent = false;
     loggingActive = false;
     playbackActive = false;
+    requestLoggingStart = false;
+    requestLoggingStop = false;
+    requestPlaybackStart = false;
+    requestPlaybackStop = false;
+    requestPlayFilename = "";
     logIndex = 1;
     btn1PressStart = 0;
     btn1WasPressed = false;
@@ -56,6 +136,17 @@ void SDLogger::setup() {
     }
     SPI.endTransaction();
 
+    // Initialize FreeRTOS recursive mutex for thread safety
+    sdMutex = xSemaphoreCreateRecursiveMutex();
+
+    // Initialize FreeRTOS queue and background task
+    logQueue = xQueueCreate(256, sizeof(LogQueueItem));
+    if (logQueue != NULL) {
+        // Pin to Core 0 (dual core) to offload Main loop entirely from SD latency
+        xTaskCreatePinnedToCore(vSDLoggerTask, "SD_LOGGER_TASK", 8192, NULL, 2, &sdLoggerTaskHandle, 0);
+        Serial.println("Multitasking SD logger task started successfully.");
+    }
+
     // Check if card is present on boot
     checkSDCard();
 }
@@ -63,6 +154,7 @@ void SDLogger::setup() {
 void SDLogger::checkSDCard() {
     if (loggingActive || playbackActive) return; // Do not interrupt active logging or playback
 
+    SPILock lock;
     // If not currently detected, attempt first-time initialization
     if (!cardPresent) {
         if (SD.begin(4, SPI, 4000000)) {
@@ -77,6 +169,7 @@ void SDLogger::checkSDCard() {
 }
 
 void SDLogger::findHighestLogIndex() {
+    SPILock lock;
     File root = SD.open("/");
     if (!root) return;
 
@@ -105,6 +198,7 @@ void SDLogger::findHighestLogIndex() {
 }
 
 String SDLogger::findLatestLogFile() {
+    SPILock lock;
     char nameBuf[32];
     for (int i = logIndex - 1; i >= 1; i--) {
         sprintf(nameBuf, "/log_%03d.csv", i);
@@ -123,23 +217,47 @@ String SDLogger::getNextFileName() {
 }
 
 void SDLogger::startLogging() {
-    if (playbackActive) {
+    if (loggingActive || requestLoggingStart) return;
+    if (playbackActive || requestPlaybackStart) {
         Serial.println("Cannot start logging while playback is active.");
         return;
     }
+    requestLoggingStart = true;
+}
 
-    // Only re-check if card is not already successfully detected to avoid multiple begin() locking issues
+void SDLogger::stopLogging() {
+    if (!loggingActive || requestLoggingStop) return;
+    requestLoggingStop = true;
+}
+
+void SDLogger::startPlayback(String filename) {
+    if (loggingActive || requestLoggingStart) {
+        Serial.println("Cannot start playback while logging is active.");
+        return;
+    }
+    requestPlayFilename = filename;
+    requestPlaybackStart = true;
+}
+
+void SDLogger::stopPlayback() {
+    if (!playbackActive || requestPlaybackStop) return;
+    requestPlaybackStop = true;
+}
+
+void SDLogger::executeStartLogging() {
+    if (playbackActive) return;
     if (!cardPresent) {
         checkSDCard();
     }
-
     if (!cardPresent) {
         Serial.println("Failed to start logging: SD Card not present.");
         orangeBlink = true;
         return;
     }
 
+    SPILock lock;
     currentLogFilename = getNextFileName();
+    Serial.printf("Opening file for logging: %s\n", currentLogFilename.c_str());
     logFile = SD.open(currentLogFilename, FILE_WRITE);
     if (logFile) {
         loggingActive = true;
@@ -150,37 +268,40 @@ void SDLogger::startLogging() {
         Serial.println(currentLogFilename);
 
         // Write SavvyCAN CSV header row with Comma separation for perfect Excel columns layout
-        logFile.print("Time Stamp,ID,Extended,Dir,Bus,LEN,D1,D2,D3,D4,D5,D6,D7,D8\n");
+        int written = logFile.print("Time Stamp,ID,Extended,Dir,Bus,LEN,D1,D2,D3,D4,D5,D6,D7,D8\n");
         logFile.flush();
+        Serial.printf("Header written to file: %d bytes.\n", written);
     } else {
         Serial.println("Failed to open log file for writing.");
         orangeBlink = true;
     }
 }
 
-void SDLogger::stopLogging() {
+void SDLogger::executeStopLogging() {
     if (loggingActive) {
+        SPILock lock;
+        logFile.flush();
         logFile.close();
         loggingActive = false;
         purpleBlink = true; // Indicate logging stopped
-        Serial.println("Stopped logging to SD Card.");
+        Serial.println("Stopped logging to SD Card. File closed cleanly.");
     }
 }
 
-void SDLogger::startPlayback(String filename) {
-    if (loggingActive) {
-        Serial.println("Cannot start playback while logging is active.");
-        return;
-    }
-    if (playbackActive) stopPlayback();
+void SDLogger::executeStartPlayback(String filename) {
+    if (loggingActive) return;
+    if (playbackActive) executeStopPlayback();
 
-    checkSDCard();
+    if (!cardPresent) {
+        checkSDCard();
+    }
     if (!cardPresent) {
         Serial.println("Failed to start playback: SD Card not present.");
         orangeBlink = true;
         return;
     }
 
+    SPILock lock;
     playFile = SD.open(filename, FILE_READ);
     if (playFile) {
         playbackActive = true;
@@ -201,7 +322,7 @@ void SDLogger::startPlayback(String filename) {
             Serial.printf("Playback initialized successfully. Baseline time: %u micros\n", fileBaseTime);
         } else {
             Serial.println("Failed to parse first playback frame.");
-            stopPlayback();
+            executeStopPlayback();
             orangeBlink = true;
         }
     } else {
@@ -210,8 +331,9 @@ void SDLogger::startPlayback(String filename) {
     }
 }
 
-void SDLogger::stopPlayback() {
+void SDLogger::executeStopPlayback() {
     if (playbackActive) {
+        SPILock lock;
         playFile.close();
         playbackActive = false;
         hasNextFrame = false;
@@ -221,7 +343,27 @@ void SDLogger::stopPlayback() {
     }
 }
 
+void SDLogger::processStateTransitions() {
+    if (requestLoggingStart) {
+        requestLoggingStart = false;
+        executeStartLogging();
+    }
+    if (requestLoggingStop) {
+        requestLoggingStop = false;
+        executeStopLogging();
+    }
+    if (requestPlaybackStart) {
+        requestPlaybackStart = false;
+        executeStartPlayback(requestPlayFilename);
+    }
+    if (requestPlaybackStop) {
+        requestPlaybackStop = false;
+        executeStopPlayback();
+    }
+}
+
 bool SDLogger::parseNextPlayFrame() {
+    SPILock lock;
     if (!playFile || !playFile.available()) return false;
 
     String line;
@@ -312,43 +454,56 @@ bool SDLogger::parseLine(String line) {
 }
 
 void SDLogger::logFrame(CAN_FRAME &frame, int bus, int dir) {
-    if (!loggingActive || !logFile) return;
+    if (!loggingActive || !logQueue) return;
 
-    // Log in SavvyCAN standard CSV format
-    // Format: Time Stamp,ID,Extended,Dir,Bus,LEN,D1,D2,D3,D4,D5,D6,D7,D8
-    logFile.printf("%u,%08X,%s,%s,%d,%d",
-                   micros(),
-                   frame.id,
-                   frame.extended ? "TRUE" : "FALSE",
-                   dir == 0 ? "Rx" : "Tx",
-                   bus,
-                   frame.length);
-
+    LogQueueItem item;
+    item.timestamp = micros();
+    item.id = frame.id;
+    item.extended = frame.extended;
+    item.length = frame.length;
+    item.bus = bus;
+    item.dir = dir;
     for (int i = 0; i < 8; i++) {
-        if (i < frame.length) {
-            logFile.printf(",%02X", frame.data.uint8[i]);
-        } else {
-            logFile.print(",");
-        }
+        item.data[i] = frame.data.uint8[i];
     }
-    logFile.print("\n");
+
+    xQueueSend(logQueue, &item, 0); // Non-blocking push
 }
 
 void SDLogger::logFrameFD(CAN_FRAME_FD &frame, int bus, int dir) {
+    if (!loggingActive || !logQueue) return;
+
+    LogQueueItem item;
+    item.timestamp = micros();
+    item.id = frame.id;
+    item.extended = frame.extended;
+    item.length = frame.length > 8 ? 8 : frame.length;
+    item.bus = bus;
+    item.dir = dir;
+    for (int i = 0; i < 8; i++) {
+        item.data[i] = (i < frame.length) ? frame.data.uint8[i] : 0;
+    }
+
+    xQueueSend(logQueue, &item, 0); // Non-blocking push
+}
+
+void SDLogger::writeLoggedFrameToFile(const LogQueueItem &item) {
     if (!loggingActive || !logFile) return;
 
-    // Fallback: log FD frame as standard CAN frame in the CSV (standard loggers usually downsample or format up to 8 bytes for CSV)
+    SPILock lock;
+    // Log in SavvyCAN standard CSV format
+    // Format: Time Stamp,ID,Extended,Dir,Bus,LEN,D1,D2,D3,D4,D5,D6,D7,D8
     logFile.printf("%u,%08X,%s,%s,%d,%d",
-                   micros(),
-                   frame.id,
-                   frame.extended ? "TRUE" : "FALSE",
-                   dir == 0 ? "Rx" : "Tx",
-                   bus,
-                   frame.length > 8 ? 8 : frame.length);
+                   item.timestamp,
+                   item.id,
+                   item.extended ? "TRUE" : "FALSE",
+                   item.dir == 0 ? "Rx" : "Tx",
+                   item.bus,
+                   item.length);
 
     for (int i = 0; i < 8; i++) {
-        if (i < frame.length) {
-            logFile.printf(",%02X", frame.data.uint8[i]);
+        if (i < item.length) {
+            logFile.printf(",%02X", item.data[i]);
         } else {
             logFile.print(",");
         }
@@ -356,31 +511,23 @@ void SDLogger::logFrameFD(CAN_FRAME_FD &frame, int bus, int dir) {
     logFile.print("\n");
 }
 
-void SDLogger::loop() {
-    // Periodically check and auto-initialize the SD card every 2 seconds if idle
-    static uint32_t lastCardCheck = 0;
-    if (!loggingActive && !playbackActive && (millis() - lastCardCheck > 2000)) {
-        lastCardCheck = millis();
-        checkSDCard();
-    }
-
-    // Periodically flush the file to protect against data loss
-    if (loggingActive && logFile && (millis() - lastFlush > 500)) {
+void SDLogger::processPeriodicCommit() {
+    // Periodically flush the file every 1 second to protect against data loss and update FAT structures
+    if (loggingActive && logFile && (millis() - lastFlush > 1000)) {
+        SPILock lock;
         logFile.flush();
         lastFlush = millis();
+        Serial.println("Flushed SD log to disk.");
     }
+}
 
-    // Auto-commit (close and re-open in append mode) every 5 seconds to guarantee directory structure writes
-    if (loggingActive && logFile && (millis() - lastReopen > 5000)) {
-        logFile.close();
-        logFile = SD.open(currentLogFilename, FILE_APPEND);
-        lastReopen = millis();
-        Serial.println("Committed SD log to disk.");
-    }
+void SDLogger::processPlaybackTick() {
+    if (!playbackActive || !playFile) return;
 
-    // Handle non-blocking SD playback ticks
-    if (playbackActive && playFile) {
-        if (!hasNextFrame) {
+    if (!hasNextFrame) {
+        // Safe scope for SD card reads
+        {
+            SPILock lock;
             if (parseNextPlayFrame()) {
                 hasNextFrame = true;
                 if (fileBaseTime == 0) {
@@ -399,23 +546,32 @@ void SDLogger::loop() {
                 stopPlayback();
             }
         }
+    }
 
-        if (hasNextFrame) {
-            uint32_t elapsedMicros = micros() - playBaseTime;
-            uint32_t fileElapsedMicros = nextFrameTime - fileBaseTime;
+    if (hasNextFrame) {
+        uint32_t elapsedMicros = micros() - playBaseTime;
+        uint32_t fileElapsedMicros = nextFrameTime - fileBaseTime;
 
-            if (elapsedMicros >= fileElapsedMicros) {
-                // Send frame on CAN bus
-                canManager.sendFrame(canBuses[nextFrameBus], nextFrame);
+        if (elapsedMicros >= fileElapsedMicros) {
+            // Send frame on CAN bus (No SPILock held to ensure MCP2517FD tasks can schedule freely)
+            canManager.sendFrame(canBuses[nextFrameBus], nextFrame);
 
-                // Trigger TX LED traffic animation
-                extern uint32_t lastTxTraffic;
-                lastTxTraffic = millis();
+            // Trigger TX LED traffic animation
+            extern uint32_t lastTxTraffic;
+            lastTxTraffic = millis();
 
-                prevFrameTime = nextFrameTime; // Update sequential tracking
-                hasNextFrame = false; // Move to next frame
-            }
+            prevFrameTime = nextFrameTime; // Update sequential tracking
+            hasNextFrame = false; // Move to next frame
         }
+    }
+}
+
+void SDLogger::loop() {
+    // Periodically check and auto-initialize the SD card every 2 seconds if idle
+    static uint32_t lastCardCheck = 0;
+    if (!loggingActive && !playbackActive && (millis() - lastCardCheck > 2000)) {
+        lastCardCheck = millis();
+        checkSDCard();
     }
 
     // Read raw Button 1 state and apply robust 50ms software debouncing

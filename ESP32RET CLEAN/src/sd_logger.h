@@ -6,6 +6,16 @@
 #include <SD.h>
 #include "config.h"
 
+struct LogQueueItem {
+    uint32_t timestamp;
+    uint32_t id;
+    bool extended;
+    uint8_t length;
+    uint8_t bus;
+    uint8_t dir; // 0 = RX, 1 = TX
+    uint8_t data[8];
+};
+
 class SDLogger {
 public:
     SDLogger();
@@ -26,7 +36,25 @@ public:
     void startPlayback(String filename);
     void stopPlayback();
 
+    // Multitasking helper methods
+    void writeLoggedFrameToFile(const LogQueueItem &item);
+    void processPlaybackTick();
+    void processPeriodicCommit();
+    void processStateTransitions();
+
 private:
+    // State change request flags
+    volatile bool requestLoggingStart;
+    volatile bool requestLoggingStop;
+    volatile bool requestPlaybackStart;
+    volatile bool requestPlaybackStop;
+    String requestPlayFilename;
+
+    void executeStartLogging();
+    void executeStopLogging();
+    void executeStartPlayback(String filename);
+    void executeStopPlayback();
+
     bool cardPresent;
     bool loggingActive;
     bool playbackActive;
