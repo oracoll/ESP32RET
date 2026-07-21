@@ -29,6 +29,10 @@ void SDLogger::setup() {
     pinMode(15, INPUT_PULLDOWN);
     pinMode(34, INPUT); // D34 button handler
 
+    // Configure CAN1 CS pin (5) as output and drive it HIGH to explicitly silence the MCP2517FD chip during boot-up SD initialization
+    pinMode(5, OUTPUT);
+    digitalWrite(5, HIGH);
+
     // Enable internal pull-ups on SPI pins to ensure stable levels and prevent open-drain float on MISO (essential for many SD card adapters)
     pinMode(19, INPUT_PULLUP); // MISO
     pinMode(23, INPUT_PULLUP); // MOSI
@@ -68,15 +72,6 @@ void SDLogger::checkSDCard() {
         } else {
             cardPresent = false;
             Serial.println("No SD Card detected.");
-        }
-    } else {
-        // If already detected, dynamically check if card is still inserted and responsive
-        if (SD.cardType() != CARD_NONE) {
-            cardPresent = true;
-        } else {
-            cardPresent = false;
-            SD.end(); // Clean up if card was pulled out
-            Serial.println("SD Card was removed.");
         }
     }
 }
@@ -362,6 +357,13 @@ void SDLogger::logFrameFD(CAN_FRAME_FD &frame, int bus, int dir) {
 }
 
 void SDLogger::loop() {
+    // Periodically check and auto-initialize the SD card every 2 seconds if idle
+    static uint32_t lastCardCheck = 0;
+    if (!loggingActive && !playbackActive && (millis() - lastCardCheck > 2000)) {
+        lastCardCheck = millis();
+        checkSDCard();
+    }
+
     // Periodically flush the file to protect against data loss
     if (loggingActive && logFile && (millis() - lastFlush > 500)) {
         logFile.flush();
