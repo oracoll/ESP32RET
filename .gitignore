@@ -27,3 +27,12 @@
 *.exe
 *.out
 *.app
+
+# PlatformIO
+.pio
+.pio/
+**/.pio/
+**/_pio/
+"ESP32RET CLEAN/.pio/"
+ESP32RET CLEAN/.pio/
+"ESP32RET CLEAN"/.pio/
